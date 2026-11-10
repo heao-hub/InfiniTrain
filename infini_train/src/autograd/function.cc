@@ -202,8 +202,11 @@ std::vector<std::shared_ptr<Tensor>> Function::Apply(
   // FunctionCtx if needed.
   ctx_.set_forward_autocast_context(GetCurrentAutocastContext());
   auto compute_inputs = input_tensors;
-  for (auto &t : compute_inputs) {
-    tls_autocast_context.Autocast(type_, t);
+  {
+    autograd::NoGradGuard no_grad;
+    for (auto &t : compute_inputs) {
+      tls_autocast_context.Autocast(type_, t);
+    }
   }
 
   std::vector<std::shared_ptr<Tensor>> output_tensors;
