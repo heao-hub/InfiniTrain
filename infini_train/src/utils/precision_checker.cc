@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "infini_train/include/autograd/function.h"
+#include "infini_train/include/autograd/grad_mode.h"
 #include "infini_train/include/datatype.h"
 #include "infini_train/include/device.h"
 #include "infini_train/include/nn/modules/module.h"
@@ -315,6 +316,7 @@ void SaveNpy(const std::shared_ptr<Tensor> &tensor, const std::string &name,
 void PrecisionChecker::CheckTensors(
     const std::string &stage, const std::string &name,
     const std::vector<std::shared_ptr<Tensor>> &tensors, const Config &config) {
+  autograd::NoGradGuard no_grad;
   const auto &global_config = PrecisionCheckEnv::Instance().GetConfig();
   if (global_config.level == PrecisionCheckLevel::kOff) {
     return;

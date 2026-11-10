@@ -17,8 +17,10 @@
 #include "glog/logging.h"
 
 #include "infini_train/include/autograd/accumulate.h"
+#include "infini_train/include/autograd/cast.h"
 #include "infini_train/include/autograd/elementwise.h"
 #include "infini_train/include/autograd/function.h"
+#include "infini_train/include/autograd/grad_mode.h"
 #include "infini_train/include/autograd/gather.h"
 #include "infini_train/include/autograd/matmul.h"
 #include "infini_train/include/autograd/no_op.h"
@@ -229,6 +231,18 @@ Tensor Tensor::To(Device device) {
 }
 
 Tensor Tensor::To(DataType dtype) {
+  if (requires_grad_ && autograd::GradMode::IsEnabled() &&
+      IsFloatingPointDType(dtype_) && IsFloatingPointDType(dtype)) {
+    auto output = dtype == dtype_
+        ? std::make_shared<autograd::NoOp>(dims_)->Apply({shared_from_this()})[0]
+        : std::make_shared<autograd::Cast>(dtype)->Apply({shared_from_this()})[0];
+    output->set_sequence_parallel(sequence_parallel_);
+    output->set_is_expert_parallel(is_expert_parallel_);
+    if (dtype == dtype_ && grad_) {
+      output->set_grad(grad_);
+    }
+    return *output;
+  }
   if (dtype == dtype_) {
     auto new_tensor = Tensor(*this, 0, dims_);
     new_tensor.requires_grad_ = requires_grad_;
@@ -252,7 +266,7 @@ Tensor Tensor::To(DataType dtype) {
     new_tensor.grad_ = std::make_unique<Tensor>(grad_->To(dtype));
   }
 
-  new_tensor.requires_grad_ = requires_grad_;
+  new_tensor.requires_grad_ = requires_grad_ && IsFloatingPointDType(dtype);
   new_tensor.sequence_parallel_ = sequence_parallel_;
   new_tensor.is_expert_parallel_ = is_expert_parallel_;
   return new_tensor;

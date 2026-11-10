@@ -13,6 +13,7 @@
 #include "glog/logging.h"
 
 #include "infini_train/include/autograd/function.h"
+#include "infini_train/include/autograd/grad_mode.h"
 #include "infini_train/include/datatype.h"
 #include "infini_train/include/device.h"
 #include "infini_train/include/tensor.h"
@@ -428,6 +429,7 @@ void Module::To(Device device) {
 }
 
 void Module::To(DataType dtype) {
+  autograd::NoGradGuard no_grad;
   std::unordered_map<std::string, std::shared_ptr<Tensor>> new_parameters;
   std::unordered_map<std::string, std::shared_ptr<Tensor>> new_buffers;
   for (auto &[name, param] : parameters_) {
