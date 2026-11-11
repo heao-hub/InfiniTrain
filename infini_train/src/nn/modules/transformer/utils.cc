@@ -54,6 +54,13 @@ ApplyRotaryEmbedding(const std::shared_ptr<Tensor> &xq,
   auto cos = cos_sin->Slice(-1, 0, 1, 1)->Squeeze(-1);  // (1, T, 1, D/2)
   auto sin = cos_sin->Slice(-1, 1, 2, 1)->Squeeze(-1);  // (1, T, 1, D/2)
 
+  return {ApplyRotaryCoefficients(xq, cos, sin, rotary_interleaved),
+          ApplyRotaryCoefficients(xk, cos, sin, rotary_interleaved)};
+}
+
+std::shared_ptr<Tensor> ApplyRotaryCoefficients(
+    const std::shared_ptr<Tensor> &x, const std::shared_ptr<Tensor> &cos,
+    const std::shared_ptr<Tensor> &sin, bool rotary_interleaved) {
   auto slice_pair = [rotary_interleaved](const std::shared_ptr<Tensor> &x) {
     const auto dim = x->Dims().back();
     if (rotary_interleaved) {
@@ -62,21 +69,17 @@ ApplyRotaryEmbedding(const std::shared_ptr<Tensor> &xq,
     return std::make_pair(x->Slice(-1, 0, dim / 2), x->Slice(-1, dim / 2, dim));
   };
 
-  auto rotate = [&](const std::shared_ptr<Tensor> &x) {
-    auto [left, right] = slice_pair(x);
-    auto rotated_left = left * cos - right * sin;
-    auto rotated_right = left * sin + right * cos;
-    if (rotary_interleaved) {
-      return nn::function::Stack(
-                 std::vector<std::shared_ptr<Tensor>>{rotated_left,
-                                                      rotated_right},
-                 -1)
-          ->Flatten(-2);
-    }
-    return nn::function::Concat(
-        std::vector<std::shared_ptr<Tensor>>{rotated_left, rotated_right}, -1);
-  };
-
-  return {rotate(xq), rotate(xk)};
+  auto [left, right] = slice_pair(x);
+  auto rotated_left = left * cos - right * sin;
+  auto rotated_right = left * sin + right * cos;
+  if (rotary_interleaved) {
+    return nn::function::Stack(
+               std::vector<std::shared_ptr<Tensor>>{rotated_left,
+                                                    rotated_right},
+               -1)
+        ->Flatten(-2);
+  }
+  return nn::function::Concat(
+      std::vector<std::shared_ptr<Tensor>>{rotated_left, rotated_right}, -1);
 }
 }  // namespace infini_train
