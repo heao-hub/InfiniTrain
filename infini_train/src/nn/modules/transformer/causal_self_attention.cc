@@ -15,6 +15,7 @@
 
 #include "infini_train/include/nn/functional.h"
 #include "infini_train/include/nn/lora/lora_parallel_linear.h"
+#include "infini_train/include/nn/modules/linear.h"
 #include "infini_train/include/nn/modules/normalization.h"
 #include "infini_train/include/nn/modules/transformer/transformer_config.h"
 #include "infini_train/include/nn/modules/transformer/utils.h"
@@ -29,6 +30,31 @@ CausalSelfAttention::CausalSelfAttention(const TransformerConfig &config)
     : CloneableModule(kType), config_(config) {
   SetupAttention(config);
 
+  if (config_.attention_variant == AttentionVariant::kLowRankQKV) {
+    CHECK_EQ(parallel::global::GetTensorParallelSize(), 1)
+        << "Low-rank attention currently supports TP=1 only";
+    CHECK(!parallel::global::GetSequenceParallelEnabled());
+    CHECK_GT(config.q_lora_rank, 0);
+    CHECK_GT(config.kv_lora_rank, 0);
+    CHECK_GT(config.qk_nope_head_dim, 0);
+    CHECK_GT(config.qk_rope_head_dim, 0);
+    CHECK_EQ(config.qk_rope_head_dim % 2, 0);
+    CHECK_GT(config.v_head_dim, 0);
+    CHECK(config.position_embedding_type == PositionEmbeddingType::kRoPE);
+    CHECK(!config.qk_layernorm);
+    CHECK(!config.add_bias_linear);
+    CHECK_EQ(config.n_kv_head, config.n_head);
+    CHECK(!config.rotary_interleaved);
+    const auto qdim = config.qk_nope_head_dim + config.qk_rope_head_dim;
+    modules_["q_a_proj"] = std::make_shared<Linear>(n_embd_, config.q_lora_rank, false);
+    modules_["q_a_layernorm"] = std::make_shared<RMSNorm>(config.q_lora_rank, config.norm_eps);
+    modules_["q_b_proj"] = std::make_shared<Linear>(config.q_lora_rank, n_head_ * qdim, false);
+    modules_["kv_a_proj_with_mqa"] = std::make_shared<Linear>(n_embd_, config.kv_lora_rank + config.qk_rope_head_dim, false);
+    modules_["kv_a_layernorm"] = std::make_shared<RMSNorm>(config.kv_lora_rank, config.norm_eps);
+    modules_["kv_b_proj"] = std::make_shared<Linear>(config.kv_lora_rank, n_head_ * (config.qk_nope_head_dim + config.v_head_dim), false);
+    modules_["o_proj"] = std::make_shared<Linear>(n_head_ * config.v_head_dim, n_embd_, false);
+    return;
+  }
   if (config_.qk_layernorm) {
     modules_[kQNormLayerName] =
         std::make_shared<nn::RMSNorm>(head_dim_, config_.norm_eps);
@@ -86,6 +112,8 @@ CausalSelfAttention::CausalSelfAttention(const TransformerConfig &config)
 void CausalSelfAttention::SetupAttention(const TransformerConfig &config) {
   auto tp_world_size = nn::parallel::global::GetTensorParallelSize();
 
+  CHECK_GT(config.n_head, 0);
+  CHECK_GT(config.n_embd, 0);
   CHECK_EQ(config.n_embd % config.n_head, 0)
       << "n_embd must be divisible by n_head";
   CHECK_EQ(config.n_head % tp_world_size, 0)
@@ -114,6 +142,7 @@ void CausalSelfAttention::SetupAttention(const TransformerConfig &config) {
 ShardedStateDict CausalSelfAttention::BuildShardedStateDict(
     const ShardedStateDictBuildContext &context) const {
   auto state = Module::BuildShardedStateDict(context);
+  if (config_.attention_variant == AttentionVariant::kLowRankQKV) { return state; }
   const int tp_size = parallel::global::GetTensorParallelSize();
   const int rank = parallel::tp_rank;
   const int64_t q_global = n_head_ * head_dim_;
@@ -172,6 +201,7 @@ std::shared_ptr<infini_train::Tensor> CausalSelfAttention::RepeatKV(
 
 std::vector<std::shared_ptr<infini_train::Tensor>> CausalSelfAttention::Forward(
     const std::vector<std::shared_ptr<infini_train::Tensor>> &x) {
+  if (config_.attention_variant == AttentionVariant::kLowRankQKV) { return ForwardLowRank(x); }
   const auto B = x[0]->Dims()[0];  // bs
   const auto C = x[0]->Dims()[2];  // n_embd
 
@@ -271,6 +301,48 @@ std::vector<std::shared_ptr<infini_train::Tensor>> CausalSelfAttention::Forward(
   y = (*modules_[kCProjLayerName])({y})[0];
   // (B, H, C) == (bs, seq_len, n_embd)
   return {y};
+}
+
+std::vector<std::shared_ptr<Tensor>> CausalSelfAttention::ForwardLowRank(
+    const std::vector<std::shared_ptr<Tensor>> &x) {
+  CHECK_GT(x.size(), 3);
+  CHECK(x[1]);
+  CHECK(x[3]);
+  const auto batch = x[0]->Dims()[0];
+  const auto seq = x[0]->Dims()[1];
+  const auto qdim = config_.qk_nope_head_dim + config_.qk_rope_head_dim;
+
+  auto q = (*modules_["q_a_proj"])({x[0]})[0];
+  q = (*modules_["q_a_layernorm"])({q})[0];
+  q = (*modules_["q_b_proj"])({q})[0]->View({batch, seq, n_head_, qdim});
+  auto q_nope = q->Slice(-1, 0, config_.qk_nope_head_dim);
+  auto q_rope = q->Slice(-1, config_.qk_nope_head_dim, qdim);
+
+  auto kv = (*modules_["kv_a_proj_with_mqa"])({x[0]})[0];
+  auto k_rope = kv->Slice(-1, config_.kv_lora_rank, config_.kv_lora_rank + config_.qk_rope_head_dim)
+                    ->View({batch, seq, 1, config_.qk_rope_head_dim});
+  kv = kv->Slice(-1, 0, config_.kv_lora_rank);
+  kv = (*modules_["kv_a_layernorm"])({kv})[0];
+  kv = (*modules_["kv_b_proj"])({kv})[0]->View(
+      {batch, seq, n_head_, config_.qk_nope_head_dim + config_.v_head_dim});
+  auto k_nope = kv->Slice(-1, 0, config_.qk_nope_head_dim);
+  auto v = kv->Slice(-1, config_.qk_nope_head_dim, config_.qk_nope_head_dim + config_.v_head_dim);
+
+  CHECK(q_rope->Dtype() == k_rope->Dtype());
+  auto freqs = std::make_shared<Tensor>(x[1]->To(q_rope->Dtype()));
+  std::tie(q_rope, k_rope) = ApplyRotaryEmbedding(q_rope, k_rope, freqs, false);
+  k_rope = RepeatKV(k_rope, n_head_);
+
+  q = function::Concat({q_nope, q_rope}, -1)->Transpose(1, 2);
+  auto k = function::Concat({k_nope, k_rope}, -1)->Transpose(1, 2);
+  v = v->Transpose(1, 2);
+
+  auto scores = q->Matmul(k->Transpose(-2, -1)) * (1.0f / std::sqrt(static_cast<float>(qdim)));
+  scores = scores->MaskedFill(x[3], std::numeric_limits<float>::lowest());
+  auto output = function::Softmax(scores, -1)->Matmul(v)->Transpose(1, 2)->Contiguous()
+                    ->View({batch, seq, n_head_ * config_.v_head_dim});
+                    
+  return (*modules_["o_proj"])({output});
 }
 
 }  // namespace infini_train::nn

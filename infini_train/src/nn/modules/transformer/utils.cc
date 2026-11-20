@@ -15,12 +15,20 @@
 namespace infini_train {
 std::shared_ptr<Tensor> PrecomputeFreqsCis(int64_t dim, int64_t end,
                                            float theta, bool use_scaled,
-                                           Device device) {
+                                           Device device, const std::vector<float> &freq_factors) {
   auto dtype = DataType::kFLOAT32;
   CHECK_GE(dim, 2) << "dim must be >= 2 for slicing";
+  CHECK_EQ(dim % 2, 0);
 
   auto arange = nn::init::Arange(0, dim, dtype, device)->Slice(0, 0, dim, 2);
   auto freqs = 1.0f / nn::function::Pow(theta, arange / float(dim));
+  if (!freq_factors.empty()) {
+    CHECK_EQ(static_cast<int64_t>(freq_factors.size()), dim / 2);
+    for (float factor : freq_factors) { CHECK_GT(factor, 0.0f); }
+    Tensor factors_cpu(freq_factors.data(), {dim / 2}, dtype);
+    auto factors = std::make_shared<Tensor>(factors_cpu.To(device));
+    freqs = freqs / factors;
+  }
   // TODO(zbl): use_scaled
   // if (use_scaled) {
   //     freqs = ApplyScaling(freqs, 8192.0f);

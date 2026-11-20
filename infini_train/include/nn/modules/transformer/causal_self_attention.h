@@ -34,6 +34,8 @@ class CausalSelfAttention
       const ShardedStateDictBuildContext &context) const override;
 
  private:
+  std::vector<std::shared_ptr<Tensor>> ForwardLowRank(
+      const std::vector<std::shared_ptr<Tensor>> &x);
   TransformerConfig config_;
   int64_t n_head_ = 0;
   int64_t n_embd_ = 0;

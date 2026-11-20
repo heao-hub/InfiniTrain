@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace infini_train::nn {
 
@@ -29,6 +30,8 @@ enum class NormType {
   kLayerNorm,  // LayerNorm
   kRMSNorm     // RMSNorm
 };
+
+enum class AttentionVariant { kPackedQKV, kLowRankQKV };
 
 struct MoEConfig {
   enum class RouterScoreFunction {
@@ -111,6 +114,19 @@ struct TransformerConfig {
       false;  // True is rotate pairs of even and odd dimensions (RoFormer
               // style), False is rotate pairs of first half and second half
               // (LLaMa style).
+
+  // Low-rank Q/KV attention.
+  AttentionVariant attention_variant = AttentionVariant::kPackedQKV;
+  int64_t q_lora_rank = 0;
+  int64_t kv_lora_rank = 0;
+  int64_t qk_nope_head_dim = 0;
+  int64_t qk_rope_head_dim = 0;
+  int64_t v_head_dim = 0;
+  float embedding_scale = 1.0f;
+  std::optional<float> scale_depth = std::nullopt;
+
+  std::vector<float> rope_factors;
+  int64_t dim_model_base = 0; // Non-zero enables hidden / (n_embd / dim_model_base) before the LM head.
 
   // Normalization
   float norm_eps = 1e-5f;  // epsilon in RMSNorm
