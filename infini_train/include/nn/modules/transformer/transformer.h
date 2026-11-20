@@ -22,6 +22,9 @@ class TransformerLayer : public CloneableModule<TransformerLayer> {
 
   std::vector<std::shared_ptr<infini_train::Tensor>> Forward(
       const std::vector<std::shared_ptr<infini_train::Tensor>> &x) override;
+
+ private:
+  float residual_scale_;
 };
 
 class TransformerFirstStage : public CloneableModule<TransformerFirstStage> {

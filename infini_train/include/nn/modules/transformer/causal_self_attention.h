@@ -49,5 +49,8 @@ class CausalSelfAttention
   // GQA helper method
   std::shared_ptr<infini_train::Tensor> RepeatKV(
       const std::shared_ptr<infini_train::Tensor> &x, int64_t n_rep);
+
+  std::vector<std::shared_ptr<Tensor>> ForwardLowRank(
+      const std::vector<std::shared_ptr<Tensor>> &x);
 };
 }  // namespace infini_train::nn

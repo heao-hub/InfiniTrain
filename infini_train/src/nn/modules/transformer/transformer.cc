@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <cmath>
 
 #include "glog/logging.h"
 
@@ -36,6 +37,14 @@
 
 namespace infini_train::nn {
 namespace {
+
+float ResidualScale(const TransformerConfig &config) {
+  CHECK_GT(config.n_layer, 0);
+  return config.scale_depth.has_value()
+             ? config.scale_depth.value() / std::sqrt(static_cast<float>(config.n_layer))
+             : 1.0f;
+}
+
 std::vector<std::shared_ptr<Tensor>> RunTransformerLayers(
     const std::shared_ptr<nn::ModuleList> &layers, size_t start, size_t end,
     const std::vector<std::shared_ptr<Tensor>> &inputs) {
@@ -149,12 +158,15 @@ std::vector<std::shared_ptr<Tensor>> TransformerFirstStage::Forward(
   } else {
     // For RoPE-based models (LLaMA3), no absolute position embedding is needed.
     // (B, T, C)
+    if (config_.embedding_scale != 1.0f) {
+      return {tok_emb[0] * config_.embedding_scale};
+    }
     return tok_emb;
   }
 }
 
 TransformerLayer::TransformerLayer(const nn::TransformerConfig &config)
-    : CloneableModule(kType) {
+    : CloneableModule(kType), residual_scale_(ResidualScale(config)) {
   switch (config.norm_type) {
     case NormType::kLayerNorm:
       modules_[kLn1LayerName] =
@@ -197,12 +209,14 @@ std::vector<std::shared_ptr<Tensor>> TransformerLayer::Forward(
   }
 
   auto attn_out = (*modules_[kAttnLayerName])(attn_input)[0];
+  if (residual_scale_ != 1.0f) { attn_out = attn_out * residual_scale_; }
   auto x1 = x[0] + attn_out;
 
   // (bs, seq_len, n_embd) -> Layernorm -> (bs, seq_len, n_embd) -> MLP -> (bs,
   // seq_len, n_embd) -> Add -> (bs, seq_len, n_embd)
-  auto x2 =
-      x1 + (*modules_[kMlpLayerName])((*modules_[kLn2LayerName])({x1}))[0];
+  auto mlp_out = (*modules_[kMlpLayerName])((*modules_[kLn2LayerName])({x1}))[0];
+  if (residual_scale_ != 1.0f) { mlp_out = mlp_out * residual_scale_; }
+  auto x2 = x1 + mlp_out;
 
   // (bs, seq_len, n_embd)
   return {x2};
@@ -235,11 +249,13 @@ std::vector<std::shared_ptr<Tensor>> TransformerChunk::Forward(
 
     // Init freqs_cis on device only once
     if (buffers_[kFreqsCisName] == nullptr) {
-      int64_t head_dim = config_.n_embd / config_.n_head;
+      int64_t head_dim = config_.attention_variant == AttentionVariant::kLowRankQKV
+                             ? config_.qk_rope_head_dim
+                                                  : config_.n_embd / config_.n_head;
       autograd::NoGradGuard no_grad;
       buffers_[kFreqsCisName] = PrecomputeFreqsCis(
           head_dim, config_.block_size * 2, config_.rope_theta,
-          config_.use_scaled_rope, device);
+          config_.use_scaled_rope, device, config_.rope_factors);
     }
 
     const auto t =
@@ -348,6 +364,10 @@ std::vector<std::shared_ptr<Tensor>> TransformerLastStage::Forward(
 
   // TODO(dcj): add inference-time mini-optimization
   // (B, T, C) -> Linear(C, V) -> (B, T, V)
+
+  if (config_.dim_model_base > 0) {
+    x1[0] = x1[0] / (static_cast<float>(config_.n_embd) / config_.dim_model_base);
+  }
   return (*modules_[kLMHeadLayerName])(x1);
 }
 
