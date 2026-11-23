@@ -23,6 +23,16 @@ class CausalSelfAttention
   static constexpr char kQNormLayerName[] = "q_norm";
   static constexpr char kKNormLayerName[] = "k_norm";
 
+  static constexpr char kQAProjLayerName[] = "q_a_proj";
+  static constexpr char kQALayerNormLayerName[] = "q_a_layernorm";
+  static constexpr char kQBProjLayerName[] = "q_b_proj";
+
+  static constexpr char kKVAProjWithMQALayerName[] = "kv_a_proj_with_mqa";
+  static constexpr char kKVALayerNormLayerName[] = "kv_a_layernorm";
+  static constexpr char kKVBProjLayerName[] = "kv_b_proj";
+  
+  static constexpr char kOProjLayerName[] = "o_proj";
+
   static constexpr char kParamBiasName[] = "bias";
 
   explicit CausalSelfAttention(const TransformerConfig &config);

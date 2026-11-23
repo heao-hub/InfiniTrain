@@ -46,13 +46,21 @@ CausalSelfAttention::CausalSelfAttention(const TransformerConfig &config)
     CHECK_EQ(config.n_kv_head, config.n_head);
     CHECK(!config.rotary_interleaved);
     const auto qdim = config.qk_nope_head_dim + config.qk_rope_head_dim;
-    modules_["q_a_proj"] = std::make_shared<Linear>(n_embd_, config.q_lora_rank, false);
-    modules_["q_a_layernorm"] = std::make_shared<RMSNorm>(config.q_lora_rank, config.norm_eps);
-    modules_["q_b_proj"] = std::make_shared<Linear>(config.q_lora_rank, n_head_ * qdim, false);
-    modules_["kv_a_proj_with_mqa"] = std::make_shared<Linear>(n_embd_, config.kv_lora_rank + config.qk_rope_head_dim, false);
-    modules_["kv_a_layernorm"] = std::make_shared<RMSNorm>(config.kv_lora_rank, config.norm_eps);
-    modules_["kv_b_proj"] = std::make_shared<Linear>(config.kv_lora_rank, n_head_ * (config.qk_nope_head_dim + config.v_head_dim), false);
-    modules_["o_proj"] = std::make_shared<Linear>(n_head_ * config.v_head_dim, n_embd_, false);
+    modules_[kQAProjLayerName] =
+        std::make_shared<Linear>(n_embd_, config.q_lora_rank, false);
+    modules_[kQALayerNormLayerName] =
+        std::make_shared<RMSNorm>(config.q_lora_rank, config.norm_eps);
+    modules_[kQBProjLayerName] =
+        std::make_shared<Linear>(config.q_lora_rank, n_head_ * qdim, false);
+    modules_[kKVAProjWithMQALayerName] = std::make_shared<Linear>(
+        n_embd_, config.kv_lora_rank + config.qk_rope_head_dim, false);
+    modules_[kKVALayerNormLayerName] =
+        std::make_shared<RMSNorm>(config.kv_lora_rank, config.norm_eps);
+    modules_[kKVBProjLayerName] = std::make_shared<Linear>(
+        config.kv_lora_rank,
+        n_head_ * (config.qk_nope_head_dim + config.v_head_dim), false);
+    modules_[kOProjLayerName] =
+        std::make_shared<Linear>(n_head_ * config.v_head_dim, n_embd_, false);
     return;
   }
   if (config_.qk_layernorm) {
@@ -312,18 +320,18 @@ std::vector<std::shared_ptr<Tensor>> CausalSelfAttention::ForwardLowRank(
   const auto seq = x[0]->Dims()[1];
   const auto qdim = config_.qk_nope_head_dim + config_.qk_rope_head_dim;
 
-  auto q = (*modules_["q_a_proj"])({x[0]})[0];
-  q = (*modules_["q_a_layernorm"])({q})[0];
-  q = (*modules_["q_b_proj"])({q})[0]->View({batch, seq, n_head_, qdim});
+  auto q = (*modules_[kQAProjLayerName])({x[0]})[0];
+  q = (*modules_[kQALayerNormLayerName])({q})[0];
+  q = (*modules_[kQBProjLayerName])({q})[0]->View({batch, seq, n_head_, qdim});
   auto q_nope = q->Slice(-1, 0, config_.qk_nope_head_dim);
   auto q_rope = q->Slice(-1, config_.qk_nope_head_dim, qdim);
 
-  auto kv = (*modules_["kv_a_proj_with_mqa"])({x[0]})[0];
+  auto kv = (*modules_[kKVAProjWithMQALayerName])({x[0]})[0];
   auto k_rope = kv->Slice(-1, config_.kv_lora_rank, config_.kv_lora_rank + config_.qk_rope_head_dim)
                     ->View({batch, seq, 1, config_.qk_rope_head_dim});
   kv = kv->Slice(-1, 0, config_.kv_lora_rank);
-  kv = (*modules_["kv_a_layernorm"])({kv})[0];
-  kv = (*modules_["kv_b_proj"])({kv})[0]->View(
+  kv = (*modules_[kKVALayerNormLayerName])({kv})[0];
+  kv = (*modules_[kKVBProjLayerName])({kv})[0]->View(
       {batch, seq, n_head_, config_.qk_nope_head_dim + config_.v_head_dim});
   auto k_nope = kv->Slice(-1, 0, config_.qk_nope_head_dim);
   auto v = kv->Slice(-1, config_.qk_nope_head_dim, config_.qk_nope_head_dim + config_.v_head_dim);
@@ -342,7 +350,7 @@ std::vector<std::shared_ptr<Tensor>> CausalSelfAttention::ForwardLowRank(
   auto output = function::Softmax(scores, -1)->Matmul(v)->Transpose(1, 2)->Contiguous()
                     ->View({batch, seq, n_head_ * config_.v_head_dim});
                     
-  return (*modules_["o_proj"])({output});
+  return (*modules_[kOProjLayerName])({output});
 }
 
 }  // namespace infini_train::nn
