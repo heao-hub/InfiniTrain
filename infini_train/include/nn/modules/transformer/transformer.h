@@ -5,6 +5,7 @@
 
 #include "infini_train/include/nn/modules/module.h"
 #include "infini_train/include/nn/modules/transformer/transformer_config.h"
+#include "infini_train/include/nn/modules/transformer/vision_embedding.h"
 #include "infini_train/include/nn/parallel/pp/pipeline_parallel.h"
 #include "infini_train/include/shard_spec.h"
 #include "infini_train/include/tensor.h"
@@ -92,6 +93,21 @@ class TransformerModel : public CloneableModule<TransformerModel> {
  private:
   const TransformerConfig config_;
   const infini_train::nn::parallel::StageInfo stage_info_;
+};
+
+// SigLIP-style encoder; valid patches must form a contiguous prefix.
+class VisionTransformer : public CloneableModule<VisionTransformer> {
+ public:
+  static constexpr char kType[] = "VisionTransformer";
+  static constexpr char kEmbeddingsName[] = "embeddings";
+  static constexpr char kEncoderName[] = "encoder";
+  static constexpr char kPostLayerNormName[] = "post_layernorm";
+  explicit VisionTransformer(const VisionConfig &config);
+  std::vector<std::shared_ptr<Tensor>> Forward(
+      const std::vector<std::shared_ptr<Tensor>> &inputs) override;
+  const VisionConfig &Config() const;
+ private:
+  VisionConfig vision_config_;
 };
 
 }  // namespace infini_train::nn
