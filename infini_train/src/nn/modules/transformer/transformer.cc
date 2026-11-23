@@ -8,6 +8,7 @@
 #include <ostream>
 #include <string>
 #include <unordered_map>
+#include <limits>
 #include <utility>
 #include <vector>
 #include <cmath>
@@ -23,6 +24,7 @@
 #include "infini_train/include/nn/modules/module.h"
 #include "infini_train/include/nn/modules/normalization.h"
 #include "infini_train/include/nn/modules/sparse.h"
+#include "infini_train/include/nn/modules/transformer/bidirectional_self_attention.h"
 #include "infini_train/include/nn/modules/transformer/causal_self_attention.h"
 #include "infini_train/include/nn/modules/transformer/mlp.h"
 #include "infini_train/include/nn/modules/transformer/moe/moe_layer.h"
@@ -170,9 +172,9 @@ TransformerLayer::TransformerLayer(const nn::TransformerConfig &config)
   switch (config.norm_type) {
     case NormType::kLayerNorm:
       modules_[kLn1LayerName] =
-          std::make_shared<nn::LayerNorm>(std::vector<int64_t>{config.n_embd});
+          std::make_shared<nn::LayerNorm>(std::vector<int64_t>{config.n_embd}, config.norm_eps);
       modules_[kLn2LayerName] =
-          std::make_shared<nn::LayerNorm>(std::vector<int64_t>{config.n_embd});
+          std::make_shared<nn::LayerNorm>(std::vector<int64_t>{config.n_embd}, config.norm_eps);
       break;
     case NormType::kRMSNorm:
       modules_[kLn1LayerName] =
@@ -184,7 +186,13 @@ TransformerLayer::TransformerLayer(const nn::TransformerConfig &config)
       LOG(FATAL) << "Unsupported norm type";
   }
 
-  modules_[kAttnLayerName] = std::make_shared<CausalSelfAttention>(config);
+  if(config.attention_direction == AttentionDirection::kBidirectional){
+    CHECK(config.attention_variant == AttentionVariant::kPackedQKV);
+    modules_[kAttnLayerName] = std::make_shared<BidirectionalSelfAttention>(config);
+  } else {
+    modules_[kAttnLayerName] = std::make_shared<CausalSelfAttention>(config);
+  }
+
   if (config.ffn_type == FFNType::kMoE) {
     modules_[kMlpLayerName] = std::make_shared<moe::MoELayer>(config);
   } else {
@@ -242,7 +250,14 @@ std::vector<std::shared_ptr<Tensor>> TransformerChunk::Forward(
 
   // Check if we need to pass RoPE parameters (for LLaMA3 style models).
   std::vector<std::shared_ptr<Tensor>> layer_inputs = {x1};
-  if (config_.position_embedding_type == PositionEmbeddingType::kRoPE) {
+
+  if(config_.attention_direction == AttentionDirection::kBidirectional) {
+    CHECK(x.size() == 1 || x.size() == 2);
+    CHECK(config_.position_embedding_type == PositionEmbeddingType::kNone);
+    if(x.size() == 2){
+      layer_inputs.push_back(x[1]);
+    }
+  }else if(config_.position_embedding_type == PositionEmbeddingType::kRoPE) {
     // For RoPE models, we need to prepare freqs_cis and potentially other
     // parameters
     const auto device = x1->GetDevice();
@@ -504,4 +519,69 @@ std::vector<std::shared_ptr<Tensor>> TransformerModel::Forward(
 
 const TransformerConfig &TransformerModel::Config() const { return config_; }
 
+VisionTransformer::VisionTransformer(const VisionConfig &config) : CloneableModule(kType), vision_config_(config) {
+    CHECK_GT(config.num_hidden_layers, 0);
+    CHECK_GT(config.num_attention_heads, 0);
+    CHECK_GT(config.intermediate_size, 0);
+    CHECK_GT(config.layer_norm_eps, 0);
+    TransformerConfig core;
+    core.n_embd = config.hidden_size;
+    core.n_layer = config.num_hidden_layers;
+    core.n_head = config.num_attention_heads;
+    core.n_kv_head = config.num_attention_heads;
+    core.position_embedding_type = PositionEmbeddingType::kNone;
+    core.attention_direction = AttentionDirection::kBidirectional;
+    core.norm_type = NormType::kLayerNorm;
+    core.norm_eps = config.layer_norm_eps;
+    core.activation_type = MLPType::kGELU;
+    core.ffn_hidden_size = config.intermediate_size;
+    core.add_bias_linear = true;
+    modules_[kEmbeddingsName] = std::make_shared<VisionEmbeddings>(config);
+    modules_[kEncoderName] = std::make_shared<TransformerChunk>(core, 0, core.n_layer);
+    modules_[kPostLayerNormName] = std::make_shared<LayerNorm>(
+        std::vector<int64_t>{config.hidden_size}, config.layer_norm_eps);
+}
+
+std::vector<std::shared_ptr<Tensor>> VisionTransformer::Forward(const std::vector<std::shared_ptr<Tensor>> &inputs) {
+    CHECK_EQ(inputs.size(), 2) << "VisionTransformer expects {pixel_values, target_sizes}";
+    auto hidden = (*modules_[kEmbeddingsName])(inputs)[0];
+
+    const int64_t batch = hidden->Dims()[0];
+    const int64_t sequence = hidden->Dims()[1];
+    auto sizes_cpu = inputs[1]->GetDevice().type() == Device::DeviceType::kCPU
+                       ? inputs[1]
+                       : std::make_shared<Tensor>(inputs[1]->To(Device()));
+    const auto *sizes = static_cast<const int64_t *>(sizes_cpu->DataPtr());
+    
+    bool has_padding = false;
+    for (int64_t b = 0; b < batch; ++b) { 
+      has_padding |= sizes[2 * b] * sizes[2 * b + 1] < sequence;
+    }
+
+    std::shared_ptr<Tensor> attention_mask;
+    if (has_padding) {
+        attention_mask
+            = std::make_shared<Tensor>(std::vector<int64_t>{batch, 1, sequence, sequence}, DataType::kFLOAT32);
+        auto *mask = static_cast<float *>(attention_mask->DataPtr());
+
+        for (int64_t b = 0; b < batch; ++b) {
+            const int64_t valid = sizes[2 * b] * sizes[2 * b + 1];
+            for (int64_t query = 0; query < sequence; ++query) {
+                for (int64_t key = 0; key < sequence; ++key) {
+                    mask[(b * sequence + query) * sequence + key]
+                        = key < valid ? 0.0f : -std::numeric_limits<float>::infinity();
+                }
+            }
+        }
+        if (hidden->Dtype() != DataType::kFLOAT32) {
+            attention_mask = std::make_shared<Tensor>(attention_mask->To(hidden->Dtype()));
+        }
+        attention_mask = std::make_shared<Tensor>(attention_mask->To(hidden->GetDevice()));
+    }
+    hidden = (*modules_[kEncoderName])(attention_mask ? std::vector<std::shared_ptr<Tensor>>{hidden, attention_mask}
+                                                : std::vector<std::shared_ptr<Tensor>>{hidden})[0];
+    return (*modules_[kPostLayerNormName])({hidden});
+}
+
+const VisionConfig &VisionTransformer::Config() const { return vision_config_; }
 }  // namespace infini_train::nn

@@ -3,6 +3,7 @@
 #include "glog/logging.h"
 
 #include "infini_train/include/nn/modules/transformer/transformer_config.h"
+#include "infini_train/include/nn/modules/transformer/vision_embedding.h"
 
 namespace fm9g {
 inline infini_train::nn::TransformerConfig TextConfig() {
@@ -52,6 +53,19 @@ inline infini_train::nn::TransformerConfig TinyTextConfig() {
   config.qk_rope_head_dim = 8;
   config.v_head_dim = 32;
   config.rope_factors.resize(config.qk_rope_head_dim / 2);
+  return config;
+}
+
+inline infini_train::nn::VisionConfig VisionConfig() {
+  infini_train::nn::VisionConfig config;
+  config.hidden_size = 1152;
+  config.intermediate_size = 4304;
+  config.num_hidden_layers = 27;
+  config.num_attention_heads = 16;
+  config.num_channels = 3;
+  config.image_size = 980;
+  config.patch_size = 14;
+  config.layer_norm_eps = 1e-6f;
   return config;
 }
 

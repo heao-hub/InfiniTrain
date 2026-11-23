@@ -31,7 +31,15 @@ enum class NormType {
   kRMSNorm     // RMSNorm
 };
 
-enum class AttentionVariant { kPackedQKV, kLowRankQKV };
+enum class AttentionVariant { 
+  kPackedQKV, 
+  kLowRankQKV 
+};
+
+enum class AttentionDirection {
+  kCausal,        // CasualSelfAttention 
+  kBidirectional  // BidirectionalSelfAttention
+};
 
 struct MoEConfig {
   enum class RouterScoreFunction {
@@ -135,6 +143,8 @@ struct TransformerConfig {
       ActivationRecomputeGranularity::kNone;
   ActivationRecomputeMethod recompute_method = ActivationRecomputeMethod::kNone;
   int64_t recompute_num_layers = 0;
+
+  AttentionDirection attention_direction = AttentionDirection::kCausal;
 
   // Inference
   bool use_kv = false;             // kv cache
