@@ -46,13 +46,21 @@ CausalSelfAttention::CausalSelfAttention(const TransformerConfig &config)
     CHECK_EQ(config.n_kv_head, config.n_head);
     CHECK(!config.rotary_interleaved);
     const auto qdim = config.qk_nope_head_dim + config.qk_rope_head_dim;
-    modules_["q_a_proj"] = std::make_shared<Linear>(n_embd_, config.q_lora_rank, false);
-    modules_["q_a_layernorm"] = std::make_shared<RMSNorm>(config.q_lora_rank, config.norm_eps);
-    modules_["q_b_proj"] = std::make_shared<Linear>(config.q_lora_rank, n_head_ * qdim, false);
-    modules_["kv_a_proj_with_mqa"] = std::make_shared<Linear>(n_embd_, config.kv_lora_rank + config.qk_rope_head_dim, false);
-    modules_["kv_a_layernorm"] = std::make_shared<RMSNorm>(config.kv_lora_rank, config.norm_eps);
-    modules_["kv_b_proj"] = std::make_shared<Linear>(config.kv_lora_rank, n_head_ * (config.qk_nope_head_dim + config.v_head_dim), false);
-    modules_["o_proj"] = std::make_shared<Linear>(n_head_ * config.v_head_dim, n_embd_, false);
+    modules_[kQAProjLayerName] =
+        std::make_shared<Linear>(n_embd_, config.q_lora_rank, false);
+    modules_[kQALayerNormLayerName] =
+        std::make_shared<RMSNorm>(config.q_lora_rank, config.norm_eps);
+    modules_[kQBProjLayerName] =
+        std::make_shared<Linear>(config.q_lora_rank, n_head_ * qdim, false);
+    modules_[kKVAProjWithMQALayerName] = std::make_shared<Linear>(
+        n_embd_, config.kv_lora_rank + config.qk_rope_head_dim, false);
+    modules_[kKVALayerNormLayerName] =
+        std::make_shared<RMSNorm>(config.kv_lora_rank, config.norm_eps);
+    modules_[kKVBProjLayerName] = std::make_shared<Linear>(
+        config.kv_lora_rank,
+        n_head_ * (config.qk_nope_head_dim + config.v_head_dim), false);
+    modules_[kOProjLayerName] =
+        std::make_shared<Linear>(n_head_ * config.v_head_dim, n_embd_, false);
     return;
   }
 
