@@ -206,4 +206,17 @@ std::shared_ptr<Tensor> Stack(
 std::shared_ptr<Tensor> Concat(
     const std::vector<std::shared_ptr<Tensor>> &inputs, int64_t dim = 0);
 
+// NCHW bilinear resize. CPU FP32 is implemented; align_corners defaults false.
+std::shared_ptr<Tensor> InterpolateBilinear2d(
+    const std::shared_ptr<Tensor> &input, const std::vector<int64_t> &size,
+    bool align_corners = false);
+
+// NCHW input; boxes are [K,5] (batch,x1,y1,x2,y2). No box gradients.
+std::shared_ptr<Tensor> RoiAlign(const std::shared_ptr<Tensor> &input,
+                                 const std::shared_ptr<Tensor> &boxes,
+                                 const std::vector<int64_t> &output_size,
+                                 float spatial_scale = 1.0f,
+                                 int64_t sampling_ratio = -1,
+                                 bool aligned = false);
+
 }  // namespace infini_train::nn::function
