@@ -82,6 +82,12 @@ class TransformerModel : public CloneableModule<TransformerModel> {
 
   explicit TransformerModel(const TransformerConfig config);
 
+  std::shared_ptr<Tensor> PrepareInputEmbeddings(
+      const std::shared_ptr<Tensor> &input_ids);
+  // Hidden states already include all first-stage position and scale terms.
+  std::vector<std::shared_ptr<Tensor>> ForwardFromEmbeddings(
+      const std::shared_ptr<Tensor> &hidden);
+
   std::vector<std::shared_ptr<infini_train::Tensor>> Forward(
       const std::vector<std::shared_ptr<infini_train::Tensor>> &x) override;
 

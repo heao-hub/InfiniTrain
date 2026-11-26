@@ -219,4 +219,11 @@ std::shared_ptr<Tensor> RoiAlign(const std::shared_ptr<Tensor> &input,
                                  int64_t sampling_ratio = -1,
                                  bool aligned = false);
 
+// Replace token rows in [B,T,D] with [N,Q,D]. spans is an int64 [N,3]
+// tensor of sorted, disjoint (batch, begin, end) triples in padded coordinates.
+std::shared_ptr<Tensor> ReplaceSequenceSpans(
+    const std::shared_ptr<Tensor> &base,
+    const std::shared_ptr<Tensor> &replacements,
+    const std::shared_ptr<Tensor> &spans);
+
 }  // namespace infini_train::nn::function

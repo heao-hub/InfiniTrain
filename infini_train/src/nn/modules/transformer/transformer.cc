@@ -501,7 +501,20 @@ ShardedStateDict TransformerModel::BuildShardedStateDict(
 
 std::vector<std::shared_ptr<Tensor>> TransformerModel::Forward(
     const std::vector<std::shared_ptr<Tensor>> &x) {
-  auto x1 = (*modules_[kPPFirstStageName])(x);
+  return ForwardFromEmbeddings(PrepareInputEmbeddings(x.at(0)));
+}
+
+std::shared_ptr<Tensor> TransformerModel::PrepareInputEmbeddings(
+    const std::shared_ptr<Tensor> &input_ids) {
+  return (*modules_.at(kPPFirstStageName))({input_ids})[0];
+}
+
+std::vector<std::shared_ptr<Tensor>> TransformerModel::ForwardFromEmbeddings(
+    const std::shared_ptr<Tensor> &hidden) {
+  CHECK_EQ(hidden->Dims().size(), 3);
+  CHECK_EQ(hidden->Dims()[2], config_.n_embd);
+  CHECK_LE(hidden->Dims()[1], config_.block_size);
+  std::vector<std::shared_ptr<Tensor>> x1{hidden};
   for (int chunk_idx = 0; chunk_idx < stage_info_.layer_ranges_per_chunk.size();
        ++chunk_idx) {
     x1 = (*modules_[kPPChunkNamePrefix + std::to_string(chunk_idx)])(x1);

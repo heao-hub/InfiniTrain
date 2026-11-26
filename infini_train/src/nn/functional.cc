@@ -4,6 +4,9 @@
 #include <memory>
 #include <vector>
 
+#include "glog/logging.h"
+#include "infini_train/include/device.h"
+
 #include "infini_train/include/autograd/activations.h"
 #include "infini_train/include/autograd/elementwise.h"
 #include "infini_train/include/autograd/interpolate.h"
@@ -119,5 +122,56 @@ std::shared_ptr<Tensor> RoiAlign(
   return std::make_shared<autograd::RoiAlign>(size, scale, ratio, aligned)
       ->Apply({input, boxes})[0];
 }
+
+// base[B, T, D]  已占位的文本embedding B个文本样本，每个样本有T个位置， 每个位置是一个D维向量  
+// replacement[N, Q, D]  图像单元对应的embedding向量 N个图像单元 每个图像单元内Q个视觉向量 
+// spans[N, 3]  替换位置 第k行写作（b, s, e）表示用第k个图像替换第b个文本样本中的[start, end)位置
+std::shared_ptr<Tensor> ReplaceSequenceSpans(
+    const std::shared_ptr<Tensor> &base,
+    const std::shared_ptr<Tensor> &replacements,
+    const std::shared_ptr<Tensor> &spans) {
+
+  const auto &dims = base->Dims();
+  const auto &src = replacements->Dims();
+  CHECK_EQ(dims.size(), 3);
+  CHECK_EQ(src.size(), 3);
+  CHECK_EQ(src[2], dims[2]);
+  CHECK(base->Dtype() == replacements->Dtype());
+  CHECK(base->GetDevice() == replacements->GetDevice());
+  CHECK(spans->Dtype() == DataType::kINT64);
+  CHECK((spans->Dims() == std::vector<int64_t>{src[0], 3}));
+  if (src[0] == 0) return base;
+  CHECK_GT(src[1], 0);
+
+  auto host = spans->GetDevice().type() == Device::DeviceType::kCPU
+                  ? spans
+                  : std::make_shared<Tensor>(spans->To(Device()));
+  const auto *bounds = static_cast<const int64_t *>(host->DataPtr());
+  // [B, T, D] --> [ B*T, D]
+  const int64_t rows = dims[0] * dims[1];
+  auto text = base->View({rows, dims[2]});
+
+  std::vector<std::shared_ptr<Tensor>> parts;
+  int64_t cursor = 0;
+  for (int64_t i = 0; i < src[0]; ++i) {
+    const auto *span = bounds + 3 * i;
+    CHECK_GE(span[0], 0);
+    CHECK_LT(span[0], dims[0]);
+    CHECK_GE(span[1], 0);
+    CHECK_LE(span[2], dims[1]);
+    CHECK_GT(span[2], span[1]);
+    CHECK_EQ(span[2] - span[1], src[1]);
+    const int64_t begin = span[0] * dims[1] + span[1];
+    CHECK_GE(begin, cursor) << "Sequence spans must be sorted and disjoint";
+    
+    if (cursor < begin) parts.push_back(text->Slice(0, cursor, begin));
+    parts.push_back(replacements->Slice(0, i, i + 1)->View({src[1], src[2]}));
+    cursor = begin + src[1];
+  }
+  if (cursor < rows) parts.push_back(text->Slice(0, cursor, rows));
+  auto fused = parts.size() == 1 ? parts.front() : Concat(parts, 0);
+  return fused->View(dims);
+}
+
 
 }  // namespace infini_train::nn::function
